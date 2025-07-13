@@ -60,11 +60,11 @@ Destructor.__index = Destructor
 
 export type Destructor = typeof(setmetatable({} :: DestructorData, Destructor))
 
-function Destructor.new(items: { DestructorItemInput }?): Destructor
+function Destructor.new(...: DestructorItemInput)
 	local self = setmetatable({ _items = {} }, Destructor)
 
-	if items ~= nil then
-		for _, item in items do
+	if select("#", ...) ~= 0 then
+		for _, item in { ... } do
 			self:add(item)
 		end
 	end
