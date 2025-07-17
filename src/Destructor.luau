@@ -10,18 +10,19 @@ type DestructorItemInputTable = {
 	disconnect: DestructorFunction?,
 	Disconnect: DestructorFunction?,
 }
--- make sure your wrapper signatures at minimum cover all of these items:
+-- make sure your wrapper signatures at minimum cover all of these taskItems:
 type DestructorItemInput = DestructorItem | DestructorItemInputTable
 
 type DestructorData = {
-	_items: { [DestructorItemInput]: DestructorFunction },
+	-- for this Destructor's overarching "job", we have a collection of tasks:
+	_job: { [DestructorItemInput]: DestructorFunction },
 }
 
 local function refineInputTable(inputTable: DestructorItemInputTable): DestructorFunction?
 	return inputTable.destroy or inputTable.Destroy or inputTable.disconnect or inputTable.Disconnect or nil
 end
 
-local itemWrappers = {
+local taskWrapperMapping = {
 	["thread"] = function(thread: thread)
 		return function()
 			task.cancel(thread)
@@ -61,38 +62,45 @@ Destructor.__index = Destructor
 export type Destructor = typeof(setmetatable({} :: DestructorData, Destructor))
 
 function Destructor.new(...: DestructorItemInput)
-	local self = setmetatable({ _items = {} }, Destructor)
+	local self = setmetatable({ _job = {} }, Destructor)
 
 	if select("#", ...) ~= 0 then
-		for _, item in { ... } do
-			self:add(item)
+		for _, taskItem in { ... } do
+			self:add(taskItem)
 		end
 	end
 
 	return self
 end
 
-function Destructor.add(self: Destructor, item: DestructorItemInput)
-	self._items[item] = (itemWrappers[typeof(item)])(item) :: DestructorFunction
+function Destructor.add(self: Destructor, taskItem: DestructorItemInput)
+	self._job[taskItem] = (taskWrapperMapping[typeof(taskItem)])(taskItem) :: DestructorFunction
 
 	return function()
-		self._items[item] = nil
-	end, item
+		self._job[taskItem] = nil
+	end, taskItem
 end
 
-function Destructor.remove(self: Destructor, item: DestructorItemInput)
-	local removedItem = self._items[item]
-	self._items[item] = nil
+function Destructor.remove(self: Destructor, taskItem: DestructorItemInput)
+	local removedItem = self._job[taskItem]
+	self._job[taskItem] = nil
 
 	return removedItem or nil
 end
 
-function Destructor.destroy(self: Destructor)
-	for _, finalizer in self._items do
-		finalizer()
-	end
+function Destructor.destruct(self: Destructor)
+	local job = self._job
 
-	table.clear(self._items)
+	local i, itemTask = next(job)
+	while itemTask ~= nil do
+		job[i :: DestructorItemInput] = nil
+		itemTask()
+
+		i, itemTask = next(job)
+	end
 end
+
+Destructor.Destroy = Destructor.destruct
+Destructor.DoCleaning = Destructor.destruct
 
 return Destructor
