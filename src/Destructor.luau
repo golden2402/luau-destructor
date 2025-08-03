@@ -2,27 +2,47 @@
 -- https://github.com/Fraktality/Destructor/blob/main/Destructor.lua
 
 type DestructorFunction = () -> ()
+
 type DestructorItem = thread | RBXScriptConnection | Instance | DestructorFunction
 
-type DestructorItemInputTable = {
-	destroy: DestructorFunction?,
-	Destroy: DestructorFunction?,
-	disconnect: DestructorFunction?,
-	Disconnect: DestructorFunction?,
+type TableDestructorFunction<T> = (self: T) -> ()
+type TableDestructorItem<T> = {
+	destroy: TableDestructorFunction<T>,
+} | {
+	Destroy: TableDestructorFunction<T>,
+} | {
+	disconnect: TableDestructorFunction<T>,
+} | {
+	Disconnect: TableDestructorFunction<T>,
 }
--- make sure your wrapper signatures at minimum cover all of these taskItems:
-type DestructorItemInput = DestructorItem | DestructorItemInputTable
+
+-- defines the list of types that are applicable for destructor extraction; see
+-- taskRefinementMap below
+type DestructorDataKey = DestructorItem | TableDestructorItem<any>
 
 type DestructorData = {
 	-- for this Destructor's overarching "job", we have a collection of tasks:
-	_job: { [DestructorItemInput]: DestructorFunction },
+	_job: { [DestructorDataKey]: DestructorFunction },
 }
 
-local function refineInputTable(inputTable: DestructorItemInputTable): DestructorFunction?
-	return inputTable.destroy or inputTable.Destroy or inputTable.disconnect or inputTable.Disconnect or nil
+local function getFirstDestructorFunction<T>(_inputTable: TableDestructorItem<T>): TableDestructorFunction<T>
+	-- as long as the parameter's OK, we should be safe to bypass all checks:
+	local inputTable: any = _inputTable
+
+	return assert(
+		inputTable.destroy or inputTable.Destroy or inputTable.disconnect or inputTable.Disconnect,
+		"attempted to refine table without destructor function"
+	) :: TableDestructorFunction<T>
 end
 
-local taskWrapperMapping = {
+local taskRefinementMap = {
+	["table"] = function<T>(inputTable: TableDestructorItem<T>)
+		local destructor = getFirstDestructorFunction(inputTable)
+
+		return function()
+			destructor(inputTable)
+		end
+	end,
 	["thread"] = function(thread: thread)
 		return function()
 			task.cancel(thread)
@@ -31,17 +51,6 @@ local taskWrapperMapping = {
 	["function"] = function(destructorFunction: DestructorFunction)
 		return function()
 			destructorFunction()
-		end
-	end,
-	["table"] = function(tableToWrap: DestructorItemInputTable)
-		local cleanup = refineInputTable(tableToWrap)
-
-		if cleanup == nil then
-			error("table wrapper received bad table")
-		end
-
-		return function()
-			cleanup()
 		end
 	end,
 	["Instance"] = function(instance: Instance)
@@ -61,7 +70,7 @@ Destructor.__index = Destructor
 
 export type Destructor = typeof(setmetatable({} :: DestructorData, Destructor))
 
-function Destructor.new(...: DestructorItemInput)
+function Destructor.new(...: DestructorDataKey)
 	local self = setmetatable({ _job = {} }, Destructor)
 
 	if select("#", ...) ~= 0 then
@@ -73,15 +82,15 @@ function Destructor.new(...: DestructorItemInput)
 	return self
 end
 
-function Destructor.add(self: Destructor, taskItem: DestructorItemInput)
-	self._job[taskItem] = (taskWrapperMapping[typeof(taskItem)])(taskItem) :: DestructorFunction
+function Destructor.add(self: Destructor, taskItem: DestructorDataKey)
+	self._job[taskItem] = (taskRefinementMap[typeof(taskItem)])(taskItem) :: DestructorFunction
 
 	return function()
 		self._job[taskItem] = nil
 	end, taskItem
 end
 
-function Destructor.remove(self: Destructor, taskItem: DestructorItemInput)
+function Destructor.remove(self: Destructor, taskItem: DestructorDataKey)
 	local removedItem = self._job[taskItem]
 	self._job[taskItem] = nil
 
@@ -93,7 +102,7 @@ function Destructor.destruct(self: Destructor)
 
 	local i, itemTask = next(job)
 	while itemTask ~= nil do
-		job[i :: DestructorItemInput] = nil
+		job[i :: DestructorDataKey] = nil
 		itemTask()
 
 		i, itemTask = next(job)
